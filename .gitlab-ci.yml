@@ -1,0 +1,89 @@
+# Required
+image: docker:17.03.0-ce
+services:
+    - docker:17.03.0-ce-dind
+# --------
+
+stages:
+    - build
+    - release
+    - deploy
+
+.build: &build_template
+    stage: build
+    image: vothanhkiet/alpine-node-builder:latest
+    script:
+        - npm install --quiet
+        - gulp build:staging
+    cache:
+        untracked: true
+        key: "$CI_JOB_STAGE/$CI_COMMIT_REF_NAME"
+        paths:
+            - node_modules/
+    artifacts:
+        name: archive
+        expire_in: 1 week
+        paths:
+            - release/
+
+.release: &release_template
+    stage: release
+    before_script:
+        - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN registry.ventuso.net
+    script:
+        - cd release
+        - docker build -t $CI_REGISTRY_IMAGE:$CI_BUILD_REF_NAME --rm=true .
+        - docker push $CI_REGISTRY_IMAGE:$CI_BUILD_REF_NAME
+
+.deploy: &deploy_template
+    stage: deploy
+    image: vothanhkiet/alpine-node:7.2.1
+    before_script:
+        - eval $(ssh-agent -s)
+        - mkdir -p ~/.ssh
+        - echo "$SSH_ID_KEY" >> ~/.ssh/id_rsa
+        - chmod 400 ~/.ssh/id_rsa
+        - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+    script:
+        - echo "Deploy to staging server"
+        - ssh $USER@$HOST "mkdir -p $DEPLOY_FOLDER && cd $DEPLOY_FOLDER && curl $DEPLOY_PLAN > docker-compose.yaml && docker-compose pull && docker-compose down && docker-compose up -d"
+
+build:
+    <<: *build_template
+    only:
+        - develop
+        - test
+        - staging
+        - master
+        - tags
+
+release:
+    <<: *release_template
+    only:
+        - develop
+        - test
+        - staging
+        - master
+        - tags
+
+deploy_dev:
+    <<: *deploy_template
+    variables:
+        DEPLOY_FOLDER: ~/projects/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME-$CI_COMMIT_REF_NAME
+        DEPLOY_PLAN: $DEV_DEPLOY_PLAN
+        USER: $VENTUSO_PC3_USER
+        HOST: $VENTUSO_PC3_IP
+        SSH_ID_KEY: $SSH_PRIVATE_KEY
+    only:
+        - develop
+
+deploy_staging:
+    <<: *deploy_template
+    variables:
+        DEPLOY_FOLDER: ~/projects/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME-$CI_COMMIT_REF_NAME
+        DEPLOY_PLAN: $STAGING_DEPLOY_PLAN
+        USER: $VENTUSO_PC3_USER
+        HOST: $VENTUSO_PC3_IP
+        SSH_ID_KEY: $SSH_PRIVATE_KEY
+    only:
+        - staging
